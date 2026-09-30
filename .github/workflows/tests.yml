@@ -25,3 +25,4 @@ jobs:
         run: |
           python -m timetable view --csv examples/alice.csv
           python -m timetable free --csv examples/alice.csv
+          python -m timetable common --person Alice=examples/alice.csv --person Bob=examples/bob.csv --person Carol=examples/carol.csv
