@@ -22,4 +22,6 @@ jobs:
       - name: Run tests
         run: python -m unittest discover -s tests -v
       - name: Smoke test
-        run: python -m timetable view --csv examples/alice.csv
+        run: |
+          python -m timetable view --csv examples/alice.csv
+          python -m timetable free --csv examples/alice.csv

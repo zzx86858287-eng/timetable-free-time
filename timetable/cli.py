@@ -3,10 +3,11 @@
 import argparse
 import sys
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from . import __version__
-from .models import Course, ScheduleError, format_week
+from .availability import Interval, daily_free_time, format_free_week, merge_courses
+from .models import Course, ScheduleError, format_week, parse_time, parse_weekday
 from .storage import read_csv, write_csv
 
 
@@ -15,12 +16,51 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command", required=True)
     view = commands.add_parser("view", help="录入或读取课表，打印本周课表")
-    source = view.add_mutually_exclusive_group(required=True)
+    add_source_arguments(view)
+    add_merge_argument(view)
+    free = commands.add_parser("free", help="计算每天可用范围内的空闲时段")
+    add_source_arguments(free)
+    add_window_arguments(free)
+    return parser
+
+
+def add_source_arguments(command: argparse.ArgumentParser) -> None:
+    source = command.add_mutually_exclusive_group(required=True)
     source.add_argument("--csv", type=Path, help="读取 UTF-8 CSV 文件")
     source.add_argument("--manual", action="store_true", help="交互录入课程")
     source.add_argument("--course", nargs=4, action="append", metavar=("课程名", "星期", "开始", "结束"), help="手动录入一门课程；可重复")
-    view.add_argument("--save", type=Path, help="将手动录入的课表保存为 CSV")
-    return parser
+    command.add_argument("--save", type=Path, help="将手动录入的课表保存为 CSV")
+
+
+def add_merge_argument(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--merge-gap", type=int, default=15, metavar="分钟", help="同日连续同名课程允许的课间间隔（默认 15 分钟）；0 保留正长度课间")
+
+
+def add_window_arguments(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--start", default="08:00", help="每天可用范围的开始时间（默认 08:00）")
+    command.add_argument("--end", default="22:00", help="每天可用范围的结束时间（默认 22:00）")
+    command.add_argument("--day-window", nargs=3, action="append", default=[], metavar=("星期", "开始", "结束"), help="覆盖某一天的可用范围；可重复指定不同天")
+    command.add_argument("--closed", action="append", default=[], metavar="星期", help="某天完全不可用；可重复")
+    add_merge_argument(command)
+
+
+def read_windows(args: argparse.Namespace) -> Dict[int, Optional[Interval]]:
+    base = Interval(parse_time(args.start), parse_time(args.end, allow_end_of_day=True))
+    windows: Dict[int, Optional[Interval]] = {day: base for day in range(1, 8)}
+    assigned = set()
+    for weekday, start, end in args.day_window:
+        day = parse_weekday(weekday)
+        if day in assigned:
+            raise ScheduleError(f"星期 {day} 的 --day-window 重复。")
+        windows[day] = Interval(parse_time(start), parse_time(end, allow_end_of_day=True))
+        assigned.add(day)
+    for weekday in args.closed:
+        day = parse_weekday(weekday)
+        if day in assigned:
+            raise ScheduleError(f"星期 {day} 的可用范围重复或与 --closed 冲突。")
+        windows[day] = None
+        assigned.add(day)
+    return windows
 
 
 def read_manual() -> List[Course]:
@@ -57,7 +97,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        print(format_week(read_source(args)))
+        # Validate calculation options before writing a manually entered CSV.
+        merge_courses([], args.merge_gap)
+        windows = read_windows(args) if args.command == "free" else None
+        courses = read_source(args)
+        if args.command == "view":
+            print(format_week(merge_courses(courses, args.merge_gap)))
+        else:
+            free = daily_free_time(courses, windows, args.merge_gap)
+            print(format_free_week(free, windows, args.merge_gap))
     except ScheduleError as exc:
         parser.error(str(exc))
     except KeyboardInterrupt:
