@@ -1,6 +1,8 @@
 """CSV input/output; UTF-8 BOM and Chinese/English headers are supported."""
 
 import csv
+import os
+import tempfile
 from pathlib import Path
 from typing import Iterable, List
 
@@ -47,11 +49,30 @@ def read_csv(path: Path) -> List[Course]:
 
 
 def write_csv(path: Path, courses: Iterable[Course]) -> None:
+    target = Path(path)
+    temporary_path = None
     try:
-        with Path(path).open("w", encoding="utf-8", newline="") as handle:
+        # Stage beside the destination so replace stays on the same filesystem.
+        # The old file remains intact until writing, flushing and closing succeed.
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="", dir=target.parent,
+            prefix=".timetable-", suffix=".csv.tmp", delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
             writer = csv.writer(handle)
             writer.writerow(CSV_HEADERS)
             for course in courses:
                 writer.writerow((course.name, course.weekday, format_time(course.start), format_time(course.end)))
-    except OSError as exc:
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, target)
+    except (OSError, UnicodeError, csv.Error) as exc:
         raise ScheduleError(f"无法保存 CSV {path}：{exc}") from None
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except OSError:
+                # Replacement already removes this path; cleanup must also not
+                # hide the original failure when the filesystem rejects unlink.
+                pass

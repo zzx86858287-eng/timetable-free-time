@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "timetable-free-time"
-version = "0.3.0"
+version = "0.3.1"
 description = "从每周课表计算个人与共同空闲时间"
 readme = "README.md"
 requires-python = ">=3.9"
