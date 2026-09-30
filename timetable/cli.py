@@ -3,10 +3,11 @@
 import argparse
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from . import __version__
 from .availability import Interval, daily_free_time, format_free_week, merge_courses
+from .common import common_free_time, format_common_time
 from .models import Course, ScheduleError, format_week, parse_time, parse_weekday
 from .storage import read_csv, write_csv
 
@@ -21,6 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
     free = commands.add_parser("free", help="计算每天可用范围内的空闲时段")
     add_source_arguments(free)
     add_window_arguments(free)
+    common = commands.add_parser("common", help="计算多人共同空闲时间，按时长降序排列")
+    common.add_argument("--person", action="append", required=True, metavar="姓名=CSV路径", help="每人一份 CSV；至少两人，可重复此参数")
+    add_window_arguments(common)
     return parser
 
 
@@ -93,19 +97,49 @@ def read_source(args: argparse.Namespace) -> List[Course]:
     return courses
 
 
+def read_people(specs: Sequence[str]) -> List[Tuple[str, List[Course]]]:
+    if len(specs) < 2:
+        raise ScheduleError("共同空闲时间需要至少两个人；请重复使用 --person 姓名=CSV路径。")
+    paths = []
+    names = set()
+    for spec in specs:
+        name, separator, path = spec.partition("=")
+        name, path = name.strip(), path.strip()
+        if not separator or not name or not path:
+            raise ScheduleError(f"无效参与者 {spec!r}；请使用 --person 姓名=CSV路径。")
+        if any(ord(char) < 32 or ord(char) == 127 for char in name):
+            raise ScheduleError("参与者姓名不能包含换行或控制字符。")
+        if name in names:
+            raise ScheduleError(f"参与者姓名重复：{name}。请使用不同姓名。")
+        names.add(name)
+        paths.append((name, Path(path)))
+    people = []
+    for name, path in paths:
+        try:
+            people.append((name, read_csv(path)))
+        except ScheduleError as exc:
+            raise ScheduleError(f"{name} 的课表：{exc}") from None
+    return people
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
         # Validate calculation options before writing a manually entered CSV.
         merge_courses([], args.merge_gap)
-        windows = read_windows(args) if args.command == "free" else None
-        courses = read_source(args)
-        if args.command == "view":
-            print(format_week(merge_courses(courses, args.merge_gap)))
+        windows = read_windows(args) if args.command in ("free", "common") else None
+        if args.command == "common":
+            people = read_people(args.person)
+            shared = common_free_time([courses for _, courses in people], windows, args.merge_gap)
+            print(format_common_time(shared, [name for name, _ in people], args.merge_gap))
         else:
-            free = daily_free_time(courses, windows, args.merge_gap)
-            print(format_free_week(free, windows, args.merge_gap))
+            courses = read_source(args)
+            if args.command == "view":
+                print(format_week(merge_courses(courses, args.merge_gap)))
+            else:
+                free = daily_free_time(courses, windows, args.merge_gap)
+                print(format_free_week(free, windows, args.merge_gap))
     except ScheduleError as exc:
         parser.error(str(exc))
     except KeyboardInterrupt:
